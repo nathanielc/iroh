@@ -178,6 +178,9 @@ impl<KeyStorage: Storage> Node<KeyStorage> {
             listen_addrs,
         })
     }
+    pub fn client(&self) -> &RpcClient {
+        &self.rpc_client
+    }
 
     pub fn listen_addrs(&self) -> &Vec<Multiaddr> {
         &self.listen_addrs
