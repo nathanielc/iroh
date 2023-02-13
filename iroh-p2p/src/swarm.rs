@@ -11,13 +11,18 @@ use libp2p::{
     dns,
     identity::Keypair,
     mplex, noise, quic,
-    swarm::{derive_prelude::EitherOutput, ConnectionLimits, Executor, SwarmBuilder},
+    swarm::{
+        derive_prelude::EitherOutput, ConnectionLimits, Executor, NetworkBehaviour, SwarmBuilder,
+    },
     tcp, websocket,
     yamux::{self, WindowUpdateMode},
     PeerId, Swarm, Transport,
 };
 
-use crate::{behaviour::NodeBehaviour, Libp2pConfig};
+use crate::{
+    behaviour::{Event, NodeBehaviour},
+    Libp2pConfig,
+};
 
 /// Builds the transport stack that LibP2P will communicate over.
 async fn build_transport(
@@ -110,15 +115,21 @@ async fn build_transport(
     (transport, relay_client)
 }
 
-pub(crate) async fn build_swarm(
+pub(crate) async fn build_swarm<B>(
     config: &Libp2pConfig,
     keypair: &Keypair,
     rpc_client: Client,
-) -> Result<Swarm<NodeBehaviour>> {
+    custom_behaviour: Option<B>,
+) -> Result<Swarm<NodeBehaviour<B>>>
+where
+    B: NetworkBehaviour,
+    Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+{
     let peer_id = keypair.public().to_peer_id();
 
     let (transport, relay_client) = build_transport(keypair, config).await;
-    let behaviour = NodeBehaviour::new(keypair, config, relay_client, rpc_client).await?;
+    let behaviour =
+        NodeBehaviour::new(keypair, config, relay_client, rpc_client, custom_behaviour).await?;
 
     let limits = ConnectionLimits::default()
         .with_max_pending_incoming(Some(config.max_conns_pending_in))

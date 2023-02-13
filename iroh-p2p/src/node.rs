@@ -70,8 +70,11 @@ pub enum GossipsubEvent {
     },
 }
 
-pub struct Node<KeyStorage: Storage> {
-    swarm: Swarm<NodeBehaviour>,
+pub struct Node<KeyStorage: Storage, B: NetworkBehaviour>
+where
+    Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+{
+    swarm: Swarm<NodeBehaviour<B>>,
     net_receiver_in: Receiver<RpcMessage>,
     dial_queries: AHashMap<PeerId, Vec<OneShotSender<Result<()>>>>,
     lookup_queries: AHashMap<PeerId, Vec<oneshot::Sender<Result<IdentifyInfo>>>>,
@@ -90,7 +93,10 @@ pub struct Node<KeyStorage: Storage> {
     listen_addrs: Vec<Multiaddr>,
 }
 
-impl<T: Storage> fmt::Debug for Node<T> {
+impl<T: Storage, B: NetworkBehaviour> fmt::Debug for Node<T, B>
+where
+    Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Node")
             .field("swarm", &"Swarm<NodeBehaviour>")
@@ -120,17 +126,24 @@ const NICE_INTERVAL: Duration = Duration::from_secs(6);
 const BOOTSTRAP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const EXPIRY_INTERVAL: Duration = Duration::from_secs(1);
 
-impl<KeyStorage: Storage> Drop for Node<KeyStorage> {
+impl<KeyStorage: Storage, B: NetworkBehaviour> Drop for Node<KeyStorage, B>
+where
+    Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+{
     fn drop(&mut self) {
         self.rpc_task.abort();
     }
 }
 
-impl<KeyStorage: Storage> Node<KeyStorage> {
+impl<KeyStorage: Storage, B: NetworkBehaviour> Node<KeyStorage, B>
+where
+    Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+{
     pub async fn new(
         config: Config,
         rpc_addr: P2pAddr,
         mut keychain: Keychain<KeyStorage>,
+        custom_behaviour: Option<B>,
     ) -> Result<Self> {
         let (network_sender_in, network_receiver_in) = channel(1024); // TODO: configurable
 
@@ -152,7 +165,14 @@ impl<KeyStorage: Storage> Node<KeyStorage> {
             .context("failed to create rpc client")?;
 
         let keypair = load_identity(&mut keychain).await?;
-        let mut swarm = build_swarm(&libp2p_config, &keypair, rpc_client.clone()).await?;
+        let mut swarm = build_swarm(
+            &libp2p_config,
+            &keypair,
+            rpc_client.clone(),
+            custom_behaviour,
+        )
+        .await?;
+        info!("iroh-p2p peerid: {}",swarm.local_peer_id());
 
         let mut listen_addrs = vec![];
         for addr in &libp2p_config.listening_multiaddrs {
@@ -410,12 +430,13 @@ impl<KeyStorage: Storage> Node<KeyStorage> {
         }
     }
 
-    #[tracing::instrument(skip(self))]
+    // TODO fix skip_all
+    #[tracing::instrument(skip_all)]
     fn handle_swarm_event(
         &mut self,
         event: SwarmEvent<
-            <NodeBehaviour as NetworkBehaviour>::OutEvent,
-            <<<NodeBehaviour as NetworkBehaviour>::ConnectionHandler as IntoConnectionHandler>::Handler as ConnectionHandler>::Error>,
+            <NodeBehaviour<B> as NetworkBehaviour>::OutEvent,
+            <<<NodeBehaviour <B>as NetworkBehaviour>::ConnectionHandler as IntoConnectionHandler>::Handler as ConnectionHandler>::Error>,
     ) -> Result<()> {
         libp2p_metrics().record(&event);
         match event {
@@ -481,8 +502,8 @@ impl<KeyStorage: Storage> Node<KeyStorage> {
         }
     }
 
-    #[tracing::instrument(skip(self))]
-    fn handle_node_event(&mut self, event: Event) -> Result<()> {
+    #[tracing::instrument(skip_all)]
+    fn handle_node_event(&mut self, event: Event<B>) -> Result<()> {
         match event {
             Event::Bitswap(e) => {
                 match e {
@@ -1097,7 +1118,11 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use ssh_key::private::Ed25519Keypair;
 
-    use libp2p::{identity::Keypair as Libp2pKeypair, kad::record::Key};
+    use libp2p::{
+        identity::Keypair as Libp2pKeypair,
+        kad::record::Key,
+        swarm::{behaviour::toggle::Toggle, dummy},
+    };
 
     use super::*;
     use anyhow::Result;
@@ -1226,7 +1251,13 @@ mod tests {
             storage.put(keypair).await?;
             let kc = Keychain::from_storage(storage);
 
-            let mut p2p = Node::new(network_config, rpc_server_addr, kc).await?;
+            let mut p2p = Node::new(
+                network_config,
+                rpc_server_addr,
+                kc,
+                None::<Toggle<dummy::Behaviour>>,
+            )
+            .await?;
             let cfg = iroh_rpc_client::Config {
                 p2p_addr: Some(rpc_client_addr),
                 channels: Some(1),

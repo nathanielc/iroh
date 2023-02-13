@@ -1,4 +1,4 @@
-mod behaviour;
+pub mod behaviour;
 pub mod cli;
 pub mod config;
 mod keys;
@@ -8,6 +8,7 @@ mod providers;
 pub mod rpc;
 mod swarm;
 
+pub use self::behaviour::Event;
 pub use self::config::*;
 pub use self::keys::{DiskStorage, Keychain, MemoryStorage};
 pub use self::node::*;

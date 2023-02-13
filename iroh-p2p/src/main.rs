@@ -5,6 +5,7 @@ use iroh_p2p::ServerConfig;
 use iroh_p2p::{cli::Args, metrics, DiskStorage, Keychain, Node};
 use iroh_util::lock::ProgramLock;
 use iroh_util::{iroh_config_path, make_config};
+use libp2p::swarm::{behaviour::toggle::Toggle, dummy};
 use tokio::task;
 use tracing::error;
 
@@ -61,7 +62,13 @@ fn main() -> Result<()> {
         let rpc_addr = network_config
             .rpc_addr()
             .ok_or_else(|| anyhow!("missing p2p rpc addr"))?;
-        let mut p2p = Node::new(network_config, rpc_addr, kc).await?;
+        let mut p2p = Node::new(
+            network_config,
+            rpc_addr,
+            kc,
+            None::<Toggle<dummy::Behaviour>>,
+        )
+        .await?;
 
         // Start services
         let p2p_task = task::spawn(async move {

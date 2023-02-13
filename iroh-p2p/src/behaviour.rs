@@ -20,7 +20,7 @@ use libp2p::swarm::NetworkBehaviour;
 use libp2p::{autonat, dcutr};
 use tracing::{info, warn};
 
-pub(crate) use self::event::Event;
+pub use self::event::Event;
 use self::peer_manager::PeerManager;
 use crate::config::Libp2pConfig;
 
@@ -32,8 +32,8 @@ pub const AGENT_VERSION: &str = concat!("iroh/", env!("CARGO_PKG_VERSION"));
 
 /// Libp2p behaviour for the node.
 #[derive(NetworkBehaviour)]
-#[behaviour(out_event = "Event")]
-pub(crate) struct NodeBehaviour {
+#[behaviour(out_event = "Event<B>")]
+pub(crate) struct NodeBehaviour<B: NetworkBehaviour> {
     ping: Ping,
     identify: identify::Behaviour,
     pub(crate) bitswap: Toggle<Bitswap<BitswapStore>>,
@@ -45,6 +45,8 @@ pub(crate) struct NodeBehaviour {
     dcutr: Toggle<dcutr::behaviour::Behaviour>,
     pub(crate) gossipsub: Toggle<gossipsub::Gossipsub>,
     pub(crate) peer_manager: PeerManager,
+
+    custom_behaviour: Toggle<B>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,12 +82,13 @@ impl Store for BitswapStore {
     }
 }
 
-impl NodeBehaviour {
+impl<B: NetworkBehaviour> NodeBehaviour<B> {
     pub async fn new(
         local_key: &Keypair,
         config: &Libp2pConfig,
         relay_client: Option<relay::v2::client::Client>,
         rpc_client: Client,
+        custom_behaviour: Option<B>,
     ) -> Result<Self> {
         let peer_manager = PeerManager::default();
         let pub_key = local_key.public();
@@ -222,6 +225,7 @@ impl NodeBehaviour {
             relay_client: relay_client.into(),
             gossipsub,
             peer_manager,
+            custom_behaviour: custom_behaviour.into(),
         })
     }
 
@@ -246,6 +250,8 @@ impl NodeBehaviour {
 
 #[cfg(test)]
 mod tests {
+    use libp2p::swarm::dummy;
+
     use super::*;
 
     fn assert_send<T: Send>() {}
@@ -253,7 +259,7 @@ mod tests {
     #[test]
     fn test_traits() {
         assert_send::<Bitswap<BitswapStore>>();
-        assert_send::<NodeBehaviour>();
+        assert_send::<NodeBehaviour<Toggle<dummy::Behaviour>>>();
         assert_send::<&Bitswap<BitswapStore>>();
     }
 }
