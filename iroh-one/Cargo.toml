@@ -29,6 +29,7 @@ iroh-rpc-client.workspace = true
 iroh-rpc-types.workspace = true
 iroh-store.workspace = true
 iroh-util.workspace = true
+libp2p = {workspace = true, features = [] }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 tempfile = { workspace = true, optional = true }

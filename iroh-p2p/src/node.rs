@@ -172,7 +172,7 @@ where
             custom_behaviour,
         )
         .await?;
-        info!("iroh-p2p peerid: {}",swarm.local_peer_id());
+        info!("iroh-p2p peerid: {}", swarm.local_peer_id());
 
         let mut listen_addrs = vec![];
         for addr in &libp2p_config.listening_multiaddrs {

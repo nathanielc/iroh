@@ -56,7 +56,7 @@ pub use iroh_rpc_types::store::StoreAddr;
 mod p2p;
 mod store;
 
-pub use p2p::P2pService;
+pub use p2p::{P2pService, P2pServiceBuilder, P2pServiceBuilderCustom, P2pServiceBuilderVanilla};
 pub use store::RocksStoreService;
 
 /// Builder for an [`Iroh`] system.

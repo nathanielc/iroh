@@ -3,12 +3,75 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use iroh_one::mem_p2p;
 use iroh_p2p::{Config as P2pConfig, Libp2pConfig};
 use iroh_rpc_types::p2p::P2pAddr;
 use iroh_rpc_types::store::StoreAddr;
 use iroh_rpc_types::Addr;
+use libp2p::swarm::{behaviour::toggle::Toggle, dummy, NetworkBehaviour};
 use tokio::task::JoinHandle;
+
+#[async_trait]
+pub trait P2pServiceBuilder {
+    async fn build(self) -> Result<P2pService>;
+}
+pub struct P2pServiceBuilderVanilla {
+    libp2p_config: Libp2pConfig,
+    key_store_path: PathBuf,
+    store_service: StoreAddr,
+}
+pub struct P2pServiceBuilderCustom<B> {
+    builder: P2pServiceBuilderVanilla,
+    custom_behaviour: Option<B>,
+}
+
+impl P2pServiceBuilderVanilla {
+    pub fn new(
+        libp2p_config: Libp2pConfig,
+        key_store_path: PathBuf,
+        store_service: StoreAddr,
+    ) -> Self {
+        Self {
+            libp2p_config,
+            key_store_path,
+            store_service,
+        }
+    }
+    pub fn with_custom_behaviour<B>(self, custom_behaviour: Option<B>) -> P2pServiceBuilderCustom<B>
+    where
+        B: NetworkBehaviour + Send,
+        iroh_p2p::Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+    {
+        P2pServiceBuilderCustom {
+            builder: self,
+            custom_behaviour,
+        }
+    }
+}
+
+#[async_trait]
+impl P2pServiceBuilder for P2pServiceBuilderVanilla {
+    async fn build(self) -> Result<P2pService> {
+        P2pService::new(self.libp2p_config, self.key_store_path, self.store_service).await
+    }
+}
+#[async_trait]
+impl<B> P2pServiceBuilder for P2pServiceBuilderCustom<B>
+where
+    B: NetworkBehaviour + Send,
+    iroh_p2p::Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+{
+    async fn build(self) -> Result<P2pService> {
+        P2pService::new_with_custom_behaviour(
+            self.builder.libp2p_config,
+            self.builder.key_store_path,
+            self.builder.store_service,
+            self.custom_behaviour,
+        )
+        .await
+    }
+}
 
 // TODO:
 //
@@ -41,13 +104,32 @@ impl P2pService {
         key_store_path: PathBuf,
         store_service: StoreAddr,
     ) -> Result<Self> {
+        Self::new_with_custom_behaviour(
+            libp2p_config,
+            key_store_path,
+            store_service,
+            None::<Toggle<dummy::Behaviour>>,
+        )
+        .await
+    }
+    pub async fn new_with_custom_behaviour<B>(
+        libp2p_config: Libp2pConfig,
+        key_store_path: PathBuf,
+        store_service: StoreAddr,
+        custom_behaviour: Option<B>,
+    ) -> Result<Self>
+    where
+        B: NetworkBehaviour + Send,
+        iroh_p2p::Event<B>: From<<B as NetworkBehaviour>::OutEvent>,
+    {
         let addr = Addr::new_mem();
         let mut config = P2pConfig::default_with_rpc(addr.clone());
 
         config.rpc_client.store_addr = Some(store_service);
         config.libp2p = libp2p_config;
         config.key_store_path = key_store_path;
-        let task = mem_p2p::start(addr.clone(), config).await?;
+        let task =
+            mem_p2p::start_with_custom_behavior(addr.clone(), config, custom_behaviour).await?;
         Ok(Self { task, addr })
     }
 
