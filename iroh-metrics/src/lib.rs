@@ -130,7 +130,11 @@ fn init_tracer(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
             ])))
             .install_batch(opentelemetry::runtime::Tokio)?;
 
-        Some(tracing_opentelemetry::layer().with_tracer(tracer))
+        Some(
+            tracing_opentelemetry::layer()
+                .with_tracer(tracer)
+                .with_filter(EnvFilter::from_default_env()),
+        )
     } else {
         None
     };

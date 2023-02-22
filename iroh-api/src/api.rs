@@ -114,6 +114,25 @@ impl Api {
         Ok(P2pApi::new(p2p_client))
     }
 
+    /// Returns a client for direct access to all RPC methods.
+    pub fn client(&self) -> Client {
+        self.client.clone()
+    }
+
+    /// Resolve an IPFS path
+    pub async fn resolve(&self, ipfs_path: &IpfsPath) -> Result<Vec<Cid>> {
+        ensure!(
+            ipfs_path.cid().is_some(),
+            "IPFS path does not refer to a CID"
+        );
+
+        tracing::debug!("get {:?}", ipfs_path);
+        let resolver = self.resolver.clone();
+        let results = resolver.resolve(ipfs_path.clone()).await?;
+
+        Ok(results.metadata().resolved_path.clone())
+    }
+
     /// High level get, equivalent of CLI `iroh get`.
     ///
     /// Returns a stream of items, where items can be either blobs or UnixFs components.
