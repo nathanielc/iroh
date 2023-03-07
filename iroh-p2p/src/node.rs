@@ -456,6 +456,7 @@ impl<KeyStorage: Storage> Node<KeyStorage> {
             let sender = sender.clone();
             tokio::task::spawn(async move {
                 if let Err(e) = sender.send(ev.clone()).await {
+                    // TODO(nathanielc): Remove the sender from the network_events set
                     warn!("failed to send network event: {:?}", e);
                 }
             });
@@ -1079,12 +1080,13 @@ mod tests {
     use crate::keys::{Keypair, MemoryStorage};
 
     use bytes::Bytes;
-    use futures::TryStreamExt;
+    use futures::{future, TryStreamExt};
     use rand::prelude::*;
     use rand_chacha::ChaCha8Rng;
     use ssh_key::private::Ed25519Keypair;
 
     use libp2p::{identity::Keypair as Libp2pKeypair, kad::record::Key};
+    use tokio::task;
 
     use super::*;
     use anyhow::Result;
@@ -1220,6 +1222,8 @@ mod tests {
                 ..Default::default()
             };
 
+            let network_events = p2p.network_events();
+
             if let Some(keys) = self.keys {
                 if let Some(kad) = p2p.swarm.behaviour_mut().kad.as_mut() {
                     for k in keys {
@@ -1246,6 +1250,7 @@ mod tests {
                 task,
                 client,
                 peer_id,
+                network_events,
                 addr,
                 dial_addr,
             })
@@ -1269,6 +1274,8 @@ mod tests {
         client: P2pClient,
         /// The node's peer_id
         peer_id: PeerId,
+        /// A channel to read the network events received by the node.
+        network_events: Receiver<NetworkEvent>,
         /// The listening address for this node.
         addr: Multiaddr,
         /// A multiaddr that is a combination of the listening addr and peer_id.
@@ -1421,11 +1428,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_cancel_listen_for_identify() -> Result<()> {
-        let test_runner_a = TestRunnerBuilder::new().no_bootstrap().build().await?;
+        let mut test_runner_a = TestRunnerBuilder::new().no_bootstrap().build().await?;
         let peer_id: PeerId = "12D3KooWFma2D63TG9ToSiRsjFkoNm2tTihScTBAEdXxinYk5rwE"
             .parse()
             .unwrap();
-        let mut network_events = test_runner_a.client.network_events().await?;
         test_runner_a
             .client
             .lookup(peer_id, None)
@@ -1433,7 +1439,7 @@ mod tests {
             .unwrap_err();
         // when lookup ends in error, we must ensure we
         // have canceled the lookup
-        let event = network_events.next().await.unwrap().unwrap();
+        let event = test_runner_a.network_events.recv().await.unwrap();
         if let NetworkEvent::CancelLookupQuery(got_peer_id) = event {
             assert_eq!(peer_id, got_peer_id);
         } else {
@@ -1445,7 +1451,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_gossipsub() -> Result<()> {
-        let test_runner_a = TestRunnerBuilder::new().no_bootstrap().build().await?;
+        let mut test_runner_a = TestRunnerBuilder::new().no_bootstrap().build().await?;
         // peer_id 12D3KooWLo6JTNKXfjkZtKf8ooLQoXVXUEeuu4YDY3CYqK6rxHXt
         let test_runner_b = TestRunnerBuilder::new()
             .no_bootstrap()
@@ -1453,15 +1459,14 @@ mod tests {
             .build()
             .await?;
         let addrs_b = vec![test_runner_b.addr.clone()];
-        let mut network_events_a = test_runner_a.client.network_events().await?;
 
         test_runner_a
             .client
             .connect(test_runner_b.peer_id, addrs_b)
             .await?;
 
-        match network_events_a.next().await {
-            Some(Ok(NetworkEvent::PeerConnected(peer_id))) => {
+        match test_runner_a.network_events.recv().await {
+            Some(NetworkEvent::PeerConnected(peer_id)) => {
                 assert_eq!(test_runner_b.peer_id, peer_id);
             }
             Some(n) => {
@@ -1479,28 +1484,35 @@ mod tests {
         // create topic
         let topic = libp2p::gossipsub::TopicHash::from_raw("test_topic");
         // subscribe both to same topic
-        test_runner_a
+        let mut subscription_a = test_runner_a
             .client
             .gossipsub_subscribe(topic.clone())
             .await?;
-        test_runner_b
+        let subscription_b = test_runner_b
             .client
             .gossipsub_subscribe(topic.clone())
             .await?;
 
-        match network_events_a.next().await {
-            Some(Ok(NetworkEvent::Gossipsub(GossipsubEvent::Subscribed {
+        // Spawn a task to read all messages from b, but ignore them.
+        // This ensures the subscription request is actually processed.
+        task::spawn(subscription_b.for_each(|_| future::ready(())));
+
+        match subscription_a.next().await {
+            Some(Ok(GossipsubEvent::Subscribed {
                 peer_id,
                 topic: subscribed_topic,
-            }))) => {
+            })) => {
                 assert_eq!(test_runner_b.peer_id, peer_id);
                 assert_eq!(topic, subscribed_topic);
             }
             Some(n) => {
-                anyhow::bail!("unexpected network event: {:?}", n);
+                anyhow::bail!(
+                    "unexpected network event, expecting a GossipsubEvent::Subscribed, got: {:?}",
+                    n
+                );
             }
             None => {
-                anyhow::bail!("expected NetworkEvent::Gossipsub(Subscribed), received no event");
+                anyhow::bail!("expected GossipsubEvent::Subscribed, received no event");
             }
         };
 
@@ -1529,20 +1541,24 @@ mod tests {
             .gossipsub_publish(topic.clone(), msg.clone())
             .await?;
 
-        match network_events_a.next().await {
-            Some(Ok(NetworkEvent::Gossipsub(GossipsubEvent::Message {
-                from, message, ..
-            }))) => {
+        match subscription_a.next().await {
+            Some(Ok(GossipsubEvent::Message { from, message, .. })) => {
                 assert_eq!(test_runner_b.peer_id, from);
                 assert_eq!(topic, message.topic);
                 assert_eq!(test_runner_b.peer_id, message.source.unwrap());
                 assert_eq!(msg.to_vec(), message.data);
             }
-            Some(n) => {
-                anyhow::bail!("unexpected network event: {:?}", n);
+            Some(Ok(n)) => {
+                anyhow::bail!(
+                    "unexpected network event, expecting a GossipsubEvent::Message, got: {:?}",
+                    n
+                );
+            }
+            Some(Err(e)) => {
+                anyhow::bail!("unexpected network error: {:?}", e);
             }
             None => {
-                anyhow::bail!("expected NetworkEvent::Gossipsub(Message), received no event");
+                anyhow::bail!("expected GossipsubEvent::Message, received no event");
             }
         };
 
@@ -1550,16 +1566,23 @@ mod tests {
             .client
             .gossipsub_unsubscribe(topic.clone())
             .await?;
-        match network_events_a.next().await {
-            Some(Ok(NetworkEvent::Gossipsub(GossipsubEvent::Unsubscribed {
+
+        match subscription_a.next().await {
+            Some(Ok(GossipsubEvent::Unsubscribed {
                 peer_id,
                 topic: unsubscribe_topic,
-            }))) => {
+            })) => {
                 assert_eq!(test_runner_b.peer_id, peer_id);
                 assert_eq!(topic, unsubscribe_topic);
             }
-            Some(n) => {
-                anyhow::bail!("unexpected network event: {:?}", n);
+            Some(Ok(n)) => {
+                anyhow::bail!(
+                    "unexpected network event, expecting a GossipsubEvent::Unsubscribed, got: {:?}",
+                    n
+                );
+            }
+            Some(Err(e)) => {
+                anyhow::bail!("unexpected network error: {:?}", e);
             }
             None => {
                 anyhow::bail!("expected NetworkEvent::Gossipsub(Unsubscribed), received no event");
@@ -1581,7 +1604,7 @@ mod tests {
         println!("peer_a: {:?}", test_runner_a.peer_id);
 
         // peer_id 12D3KooWLo6JTNKXfjkZtKf8ooLQoXVXUEeuu4YDY3CYqK6rxHXt
-        let test_runner_b = TestRunnerBuilder::new()
+        let mut test_runner_b = TestRunnerBuilder::new()
             .no_bootstrap()
             .with_seed(ChaCha8Rng::from_seed([0; 32]))
             .build()
@@ -1598,7 +1621,6 @@ mod tests {
 
         println!("peer_c: {:?}", test_runner_c.peer_id);
 
-        let mut network_events_b = test_runner_b.client.network_events().await?;
         // connect a and c to b
         test_runner_a
             .client
@@ -1606,8 +1628,8 @@ mod tests {
             .await?;
 
         // expect a network event showing a & b have connected
-        match network_events_b.next().await {
-            Some(Ok(NetworkEvent::PeerConnected(peer_id))) => {
+        match test_runner_b.network_events.recv().await {
+            Some(NetworkEvent::PeerConnected(peer_id)) => {
                 assert_eq!(test_runner_a.peer_id, peer_id);
             }
             Some(n) => {
@@ -1624,8 +1646,8 @@ mod tests {
             .await?;
 
         // expect a network event showing b & c have connected
-        match network_events_b.next().await {
-            Some(Ok(NetworkEvent::PeerConnected(peer_id))) => {
+        match test_runner_b.network_events.recv().await {
+            Some(NetworkEvent::PeerConnected(peer_id)) => {
                 assert_eq!(test_runner_c.peer_id, peer_id);
             }
             Some(n) => {

@@ -14,6 +14,6 @@ pub async fn build(port: u16, db_path: &Path) -> Result<Iroh> {
     libp2p_config.max_conns_in = 8;
     libp2p_config.max_conns_out = 8;
 
-    let (p2p,_network_events) = P2pService::new(libp2p_config, db_path, store.addr()).await?;
+    let p2p = P2pService::new(libp2p_config, db_path, store.addr()).await?;
     IrohBuilder::new().store(store).p2p(p2p).build().await
 }

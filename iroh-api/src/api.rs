@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -9,9 +9,7 @@ use anyhow::{ensure, Context, Result};
 use cid::Cid;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
-use iroh_resolver::{
-    resolver::Resolver, ContentLoader, FullLoader, FullLoaderConfig, LoaderFromProviders,
-};
+use iroh_resolver::{resolver::Resolver, ContentLoader, FullLoader, FullLoaderConfig};
 use iroh_rpc_client::{Client, ClientStatus};
 use iroh_unixfs::builder::Entry as UnixfsEntry;
 use iroh_util::{iroh_config_path, make_config};
@@ -19,7 +17,6 @@ use relative_path::RelativePathBuf;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::store::add_blocks_to_store;
-use crate::PeerId;
 
 /// API to interact with an iroh system.
 ///
@@ -129,28 +126,6 @@ impl Api {
 
         tracing::debug!("get {:?}", ipfs_path);
         self.get_with_resolver(ipfs_path, self.resolver.clone())
-    }
-
-    pub fn get_from(
-        &self,
-        ipfs_path: &IpfsPath,
-        peers: HashSet<PeerId>,
-    ) -> Result<BoxStream<'static, Result<(RelativePathBuf, OutType)>>> {
-        ensure!(
-            ipfs_path.cid().is_some(),
-            "IPFS path does not refer to a CID"
-        );
-
-        tracing::debug!("get {:?} from peers {:#?}", ipfs_path, peers);
-        // TODO(ramfox): path of least resistance to hack this together as POC. Might be the way
-        // was want to go, or, if it's bad news bears to have (potentially) more than one resolver,
-        // we can bake in passing down providers through a LoadConfig (or some similar name) that allows you to tune
-        // your actions down in the loader
-        let loader = LoaderFromProviders::new(self.client.clone(), peers);
-        // TODO(ramfox): is it okay to create these ad-hoc. If so, we probably shouldn't be storing
-        // one in general
-        let resolver = Resolver::new(loader);
-        self.get_with_resolver(ipfs_path, resolver)
     }
 
     fn get_with_resolver<T: ContentLoader + std::marker::Unpin>(
